@@ -13,3 +13,7 @@ byteorder = "1"
 [[bin]]
 name = "test-for-junk"
 path = "src/test-for-junk.rs"
+
+[[bin]]
+name = "clean-junk"
+path = "src/clean-junk.rs"

@@ -1,4 +1,4 @@
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, Write, SeekFrom};
 use byteorder::{BigEndian, ReadBytesExt};
 //use flate2;
 
@@ -24,7 +24,7 @@ pub struct RegionFile<T>
 
 
 
-impl<R> RegionFile<R> where R: Read + Seek
+impl<R> RegionFile<R> where R: Read + Seek + Write
 {
     /// Parses a region file
     pub fn new(mut r: R) -> Result<RegionFile<R>, Box<dyn std::error::Error>> {
@@ -86,6 +86,18 @@ impl<R> RegionFile<R> where R: Read + Seek
         self.offsets[idx]
     }
 
+    /// Returns the amount of chunks in the file are used for this particular ingame chunk
+    /// 
+    /// # Panics
+    /// 
+    /// x and z must be between 0 and 31 (inclusive).  If not, panics.
+    fn get_chunk_size(&self, x: u8, z: u8) -> usize {
+        assert!(x < 32);
+        assert!(z < 32);
+        let idx = x as usize % 32 + (z as usize % 32) * 32;
+        self.chunk_size[idx] as usize * 4096
+    }
+
     /// Does the given chunk exist in the Region
     ///
     /// # Panics
@@ -103,32 +115,70 @@ impl<R> RegionFile<R> where R: Read + Seek
     /// # Panics
     /// 
     /// x and z must be between 0 and 31 (inclusive).  If not, panics.
-    pub fn junk_bytes(&mut self, x: u8, z: u8) -> Result<u32, Box<dyn std::error::Error>> {
+    pub fn junk_bytes(&mut self, x: u8, z: u8) -> Result<usize, Box<dyn std::error::Error>> {
         let offset = self.get_chunk_offset(x, z);
+        let chunk_size = self.get_chunk_size(x, z);
 
         self.cursor.seek(SeekFrom::Start(offset as u64))?;
         let total_len = self.cursor.read_u32::<BigEndian>()? as usize;
         let _ = self.cursor.read_u8()?; // this is the compression type but this is not relevant for us here
 
         let data = {
-            let mut size = 4096 - 5; // the 5 is the metadata (size and compression type)
-            while total_len > size {
-                size += 4096;
-            }
-            let mut v: Vec<u8> = Vec::with_capacity(size);
-            v.resize(size, 0);
+            // we subtract 5 here as the first 5 bytes are used for the length of the actual data
+            // and the compression mode
+            let mut v: Vec<u8> = Vec::with_capacity(chunk_size - 5);
+            v.resize(chunk_size - 5, 0);
             self.cursor.read_exact(&mut v)?;
             v
         };
 
-        let mut junk = 0 as u32;
         for &n in &data[total_len..] {
             if n != 0u8 {
-                junk += 1;
+                return Ok(chunk_size - total_len);
             }
         }
 
-        Ok(junk)
+        Ok(0)
+    }
+
+    fn clean_chunk(&mut self, x: u8, z: u8) -> Result<usize, Box<dyn std::error::Error>> {
+        let offset = self.get_chunk_offset(x, z);
+        let chunk_size = self.get_chunk_size(x, z);
+
+        self.cursor.seek(SeekFrom::Start(offset as u64)).unwrap();
+        let total_len = self.cursor.read_u32::<BigEndian>()? as usize;
+
+        assert!(chunk_size > total_len);
+
+        let size = chunk_size - total_len - 4 as usize;
+
+        self.cursor.seek(SeekFrom::Current(total_len as i64)).unwrap();
+
+        let zero = {
+            let mut v: Vec<u8> = Vec::with_capacity(size);
+            v.resize(size, 0);
+            v
+        };
+
+        self.cursor.write(&zero)?;
+
+        // we should be at the end of a file chunk now
+        debug_assert_eq!(self.cursor.seek(SeekFrom::Current(0)).unwrap() % 4096, 0);
+
+        Ok(size)
+    }
+
+    pub fn clean_junk(&mut self) -> Result<usize, Box<dyn std::error::Error>> {
+        let mut out: usize = 0;
+        for x in 0..32 {
+            for z in 0..32 {
+                if self.chunk_exists(x, z) {
+                    let res = self.clean_chunk(x, z)?;
+                    out += res;
+                }
+            }
+        }
+        Ok(out)
     }
 }
     /// Loads a chunk into a parsed NBT Tag structure.
