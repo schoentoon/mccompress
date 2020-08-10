@@ -1,6 +1,21 @@
-use std::io::{Read, Seek, Write, SeekFrom};
-use byteorder::{BigEndian, ReadBytesExt};
-//use flate2;
+use std::io;
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use flate2;
+
+#[derive(Debug)]
+pub enum Error {
+    Io(io::Error),
+    UnsupportedCompressionFormat{
+        /// Compression type byte from the format.
+        compression_type: u8
+    },
+}
+
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+        Error::Io(err)
+    }
+}
 
 /// A region file
 ///
@@ -24,10 +39,10 @@ pub struct RegionFile<T>
 
 
 
-impl<R> RegionFile<R> where R: Read + Seek + Write
+impl<R> RegionFile<R> where R: io::Read + io::Seek + io::Write
 {
     /// Parses a region file
-    pub fn new(mut r: R) -> Result<RegionFile<R>, Box<dyn std::error::Error>> {
+    pub fn new(mut r: R) -> Result<RegionFile<R>, Error> {
         let mut offsets = Vec::with_capacity(1024);
         let mut timestamps = Vec::with_capacity(1024);
         let mut chunk_size = Vec::with_capacity(1024);
@@ -115,11 +130,11 @@ impl<R> RegionFile<R> where R: Read + Seek + Write
     /// # Panics
     /// 
     /// x and z must be between 0 and 31 (inclusive).  If not, panics.
-    pub fn junk_bytes(&mut self, x: u8, z: u8) -> Result<usize, Box<dyn std::error::Error>> {
+    pub fn junk_bytes(&mut self, x: u8, z: u8) -> Result<usize, Error> {
         let offset = self.get_chunk_offset(x, z);
         let chunk_size = self.get_chunk_size(x, z);
 
-        self.cursor.seek(SeekFrom::Start(offset as u64))?;
+        self.cursor.seek(io::SeekFrom::Start(offset as u64))?;
         let total_len = self.cursor.read_u32::<BigEndian>()? as usize;
         let _ = self.cursor.read_u8()?; // this is the compression type but this is not relevant for us here
 
@@ -141,18 +156,86 @@ impl<R> RegionFile<R> where R: Read + Seek + Write
         Ok(0)
     }
 
-    fn clean_chunk(&mut self, x: u8, z: u8) -> Result<usize, Box<dyn std::error::Error>> {
+    fn recompress_chunk(&mut self, x: u8, z: u8, level: flate2::Compression) -> Result<usize, Error> {
         let offset = self.get_chunk_offset(x, z);
         let chunk_size = self.get_chunk_size(x, z);
 
-        self.cursor.seek(SeekFrom::Start(offset as u64)).unwrap();
+        self.cursor.seek(io::SeekFrom::Start(offset as u64))?;
+        let total_len = self.cursor.read_u32::<BigEndian>()? as usize;
+        let compression_type = self.cursor.read_u8()?;
+
+        assert!(chunk_size > total_len);
+
+        let size = chunk_size - total_len - 4 as usize;
+
+        if compression_type != 2 {
+            return Err(Error::UnsupportedCompressionFormat{compression_type});
+        }
+
+        let compressed_data = {
+            let mut v: Vec<u8> = Vec::with_capacity(total_len - 1);
+            v.resize(total_len - 1, 0);
+            self.cursor.read_exact(&mut v)?;
+            v
+        };
+
+        // we decode the original stream and re compress it with the specified compression level
+        let mut decoder = flate2::read::ZlibDecoder::new(io::Cursor::new(compressed_data));
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), level);
+
+        // we copy the entire decoder into the new encoder
+        io::copy(&mut decoder, &mut encoder)?;
+
+        let mut compressed = encoder.finish()?;
+        let new_len = compressed.len() + 1;
+
+        // make sure the new length actually fits within the chunk size
+        assert!(chunk_size - 5 > new_len);
+
+        // pad the rest with zeros again
+        compressed.resize(chunk_size - 5, 0);
+
+        // as our data is prepared by now we're moving back to the start of this chunk
+        self.cursor.seek(io::SeekFrom::Start(offset as u64))?;
+
+        // then we right away write the new length and write the compression type (which will be the same)
+        self.cursor.write_u32::<BigEndian>(new_len as u32)?;
+        self.cursor.write_u8(compression_type)?;
+
+        // and afterwards we're writing the newly compressed data
+        self.cursor.write(&compressed)?;
+
+        // we should be at the end of a file chunk now
+        debug_assert_eq!(self.cursor.seek(io::SeekFrom::Current(0)).unwrap() % 4096, 0);
+
+        Ok(total_len - new_len)
+    }
+
+    pub fn recompress_region(&mut self, level: flate2::Compression) -> Result<usize, Error> {
+        let mut out: usize = 0;
+        for x in 0..32 {
+            for z in 0..32 {
+                if self.chunk_exists(x, z) {
+                    let res = self.recompress_chunk(x, z, level)?;
+                    out += res;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn clean_chunk(&mut self, x: u8, z: u8) -> Result<usize, Error> {
+        let offset = self.get_chunk_offset(x, z);
+        let chunk_size = self.get_chunk_size(x, z);
+
+        self.cursor.seek(io::SeekFrom::Start(offset as u64))?;
         let total_len = self.cursor.read_u32::<BigEndian>()? as usize;
 
         assert!(chunk_size > total_len);
 
         let size = chunk_size - total_len - 4 as usize;
 
-        self.cursor.seek(SeekFrom::Current(total_len as i64)).unwrap();
+        self.cursor.seek(io::SeekFrom::Current(total_len as i64))?;
 
         let zero = {
             let mut v: Vec<u8> = Vec::with_capacity(size);
@@ -163,12 +246,12 @@ impl<R> RegionFile<R> where R: Read + Seek + Write
         self.cursor.write(&zero)?;
 
         // we should be at the end of a file chunk now
-        debug_assert_eq!(self.cursor.seek(SeekFrom::Current(0)).unwrap() % 4096, 0);
+        debug_assert_eq!(self.cursor.seek(io::SeekFrom::Current(0)).unwrap() % 4096, 0);
 
         Ok(size)
     }
 
-    pub fn clean_junk(&mut self) -> Result<usize, Box<dyn std::error::Error>> {
+    pub fn clean_junk(&mut self) -> Result<usize, Error> {
         let mut out: usize = 0;
         for x in 0..32 {
             for z in 0..32 {

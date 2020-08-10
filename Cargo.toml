@@ -17,3 +17,7 @@ path = "src/test-for-junk.rs"
 [[bin]]
 name = "clean-junk"
 path = "src/clean-junk.rs"
+
+[[bin]]
+name = "recompress-region"
+path = "src/recompress-region.rs"
