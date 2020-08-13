@@ -156,7 +156,7 @@ impl<R> RegionFile<R> where R: io::Read + io::Seek + io::Write
         Ok(0)
     }
 
-    fn recompress_chunk(&mut self, x: u8, z: u8, level: flate2::Compression) -> Result<usize, Error> {
+    fn recompress_chunk(&mut self, x: u8, z: u8, level: flate2::Compression) -> Result<(usize, usize), Error> {
         let offset = self.get_chunk_offset(x, z);
         let chunk_size = self.get_chunk_size(x, z);
 
@@ -165,8 +165,6 @@ impl<R> RegionFile<R> where R: io::Read + io::Seek + io::Write
         let compression_type = self.cursor.read_u8()?;
 
         assert!(chunk_size > total_len);
-
-        let size = chunk_size - total_len - 4 as usize;
 
         if compression_type != 2 {
             return Err(Error::UnsupportedCompressionFormat{compression_type});
@@ -208,16 +206,17 @@ impl<R> RegionFile<R> where R: io::Read + io::Seek + io::Write
         // we should be at the end of a file chunk now
         debug_assert_eq!(self.cursor.seek(io::SeekFrom::Current(0)).unwrap() % 4096, 0);
 
-        Ok(total_len - new_len)
+        Ok((total_len, new_len))
     }
 
-    pub fn recompress_region(&mut self, level: flate2::Compression) -> Result<usize, Error> {
-        let mut out: usize = 0;
+    pub fn recompress_region(&mut self, level: flate2::Compression) -> Result<(usize, usize), Error> {
+        let mut out: (usize, usize) = (0, 0);
         for x in 0..32 {
             for z in 0..32 {
                 if self.chunk_exists(x, z) {
                     let res = self.recompress_chunk(x, z, level)?;
-                    out += res;
+                    out.0 += res.0;
+                    out.1 += res.1;
                 }
             }
         }

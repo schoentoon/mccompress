@@ -15,5 +15,5 @@ fn main() {
 
     let res = region.recompress_region(Compression::best()).unwrap();
     
-    println!("Saved {} bytes by compressing", res);
+    println!("Original size of {} bytes, now is {} bytes", res.0, res.1);
 }
