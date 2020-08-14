@@ -59,10 +59,10 @@ fn cleanup_handle(subopts: &CleanupOpts) {
         };
 
         match res() {
-            Ok(res) => {
+            Ok(_res) => {
             },
             Err(error) => {
-                println!("Error while processing {}", file.path().display());
+                println!("Error while processing {}: {:?}", file.path().display(), error);
             }
         };
     };
@@ -81,6 +81,48 @@ fn cleanup_handle(subopts: &CleanupOpts) {
     }
 }
 
+fn recompress_handle(subopts: &RecompressOpts) {
+    let recompress = |file: &DirEntry| {
+        println!("{}", file.path().display());
+        let res = || -> Result<usize, region::Error> {
+            let f = OpenOptions::new().write(true).read(true).open(file.path())?;
+            let mut region = region::RegionFile::new(f)?;
+
+            let res = region.recompress_region(Compression::new(subopts.level));
+
+            match res {
+                Ok(r) => {
+                    Ok(r.1)
+                },
+                Err(error) => {
+                    Err(error)
+                }
+            }
+        };
+
+        match res() {
+            Ok(_res) => {
+            },
+            Err(error) => {
+                println!("Error while processing {}: {:?}", file.path().display(), error);
+            }
+        };
+    };
+
+    for dir in &subopts.input {
+        WalkDir::new(dir)
+            .into_iter()
+            .filter_entry(|e| is_mca(e))
+            .filter_map(|v| v.ok())
+            .for_each(|x| {
+                let metadata = x.metadata().unwrap();
+                if metadata.is_file() && metadata.len() > 0 {
+                    recompress(&x);
+                }
+            });
+    }
+}
+
 fn main() {
     let opts: Opts = Opts::parse();
 
@@ -89,7 +131,7 @@ fn main() {
             cleanup_handle(&subopts);
         },
         SubCommand::Recompress(subopts) => {
-            println!("Level {}", subopts.level);
+            recompress_handle(&subopts);
         }
     }
 }
