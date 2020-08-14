@@ -9,15 +9,9 @@ edition = "2018"
 [dependencies]
 flate2 = "1"
 byteorder = "1"
+clap = "3.0.0-beta.1"
+walkdir = "2"
 
 [[bin]]
-name = "test-for-junk"
-path = "src/test-for-junk.rs"
-
-[[bin]]
-name = "clean-junk"
-path = "src/clean-junk.rs"
-
-[[bin]]
-name = "recompress-region"
-path = "src/recompress-region.rs"
+name = "mccompress"
+path = "src/mccompress.rs"
