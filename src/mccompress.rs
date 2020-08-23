@@ -5,8 +5,8 @@ use clap::Clap;
 use flate2::Compression;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
-use walkdir::{DirEntry, WalkDir};
 use threadpool::ThreadPool;
+use walkdir::{DirEntry, WalkDir};
 
 mod region;
 
@@ -62,7 +62,10 @@ fn cleanup_handle(subopts: &CleanupOpts) {
 
     let cleanup = |file: &DirEntry| {
         let res = || -> Result<usize, region::Error> {
-            let f = OpenOptions::new().write(true).read(true).open(file.path())?;
+            let f = OpenOptions::new()
+                .write(true)
+                .read(true)
+                .open(file.path())?;
             let mut region = region::RegionFile::new(f)?;
 
             region.clean_junk()
@@ -71,9 +74,13 @@ fn cleanup_handle(subopts: &CleanupOpts) {
         match res() {
             Ok(_res) => {
                 println!("Proccessed {}", file.path().display());
-            },
+            }
             Err(error) => {
-                println!("Error while processing {}: {:?}", file.path().display(), error);
+                println!(
+                    "Error while processing {}: {:?}",
+                    file.path().display(),
+                    error
+                );
             }
         };
     };
@@ -86,7 +93,7 @@ fn cleanup_handle(subopts: &CleanupOpts) {
             .for_each(|x| {
                 let metadata = x.metadata().unwrap();
                 if metadata.is_file() && metadata.len() > 0 {
-                    pool.execute(move|| cleanup(&x));
+                    pool.execute(move || cleanup(&x));
                 }
             });
     }
@@ -106,29 +113,32 @@ fn recompress_handle(subopts: &RecompressOpts) {
                 let metadata = file.metadata().unwrap();
                 if metadata.is_file() && metadata.len() > 0 {
                     let level = subopts.level;
-                    pool.execute(move|| {
+                    pool.execute(move || {
                         let res = || -> Result<usize, region::Error> {
-                            let f = OpenOptions::new().write(true).read(true).open(file.path())?;
+                            let f = OpenOptions::new()
+                                .write(true)
+                                .read(true)
+                                .open(file.path())?;
                             let mut region = region::RegionFile::new(f)?;
 
                             let res = region.recompress_region(Compression::new(level));
 
                             match res {
-                                Ok(r) => {
-                                    Ok(r.1)
-                                },
-                                Err(error) => {
-                                    Err(error)
-                                }
+                                Ok(r) => Ok(r.1),
+                                Err(error) => Err(error),
                             }
                         };
 
                         match res() {
                             Ok(_res) => {
                                 println!("Processed {}", file.path().display());
-                            },
+                            }
                             Err(error) => {
-                                println!("Error while processing {}: {:?}", file.path().display(), error);
+                                println!(
+                                    "Error while processing {}: {:?}",
+                                    file.path().display(),
+                                    error
+                                );
                             }
                         };
                     });
@@ -145,7 +155,7 @@ fn main() {
     match opts.subcmd {
         SubCommand::Cleanup(subopts) => {
             cleanup_handle(&subopts);
-        },
+        }
         SubCommand::Recompress(subopts) => {
             recompress_handle(&subopts);
         }
