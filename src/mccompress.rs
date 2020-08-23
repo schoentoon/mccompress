@@ -6,6 +6,7 @@ use flate2::Compression;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use walkdir::{DirEntry, WalkDir};
+use threadpool::ThreadPool;
 
 mod region;
 
@@ -26,6 +27,10 @@ struct CleanupOpts {
     // the files/folders that should be processed
     #[clap(required = true)]
     input: Vec<PathBuf>,
+
+    // the amount of jobs are allowed to run at the same time
+    #[clap(short, long, default_value = "16")]
+    jobs: usize,
 }
 
 #[derive(Clap)]
@@ -37,6 +42,10 @@ struct RecompressOpts {
     // the files/folders that should be processed
     #[clap(required = true)]
     input: Vec<PathBuf>,
+
+    // the amount of jobs are allowed to run at the same time
+    #[clap(short, long, default_value = "16")]
+    jobs: usize,
 }
 
 fn is_mca(entry: &DirEntry) -> bool {
@@ -49,8 +58,9 @@ fn is_mca(entry: &DirEntry) -> bool {
 }
 
 fn cleanup_handle(subopts: &CleanupOpts) {
+    let pool = ThreadPool::new(subopts.jobs);
+
     let cleanup = |file: &DirEntry| {
-        println!("{}", file.path().display());
         let res = || -> Result<usize, region::Error> {
             let f = OpenOptions::new().write(true).read(true).open(file.path())?;
             let mut region = region::RegionFile::new(f)?;
@@ -60,6 +70,7 @@ fn cleanup_handle(subopts: &CleanupOpts) {
 
         match res() {
             Ok(_res) => {
+                println!("Proccessed {}", file.path().display());
             },
             Err(error) => {
                 println!("Error while processing {}: {:?}", file.path().display(), error);
@@ -75,52 +86,57 @@ fn cleanup_handle(subopts: &CleanupOpts) {
             .for_each(|x| {
                 let metadata = x.metadata().unwrap();
                 if metadata.is_file() && metadata.len() > 0 {
-                    cleanup(&x);
+                    pool.execute(move|| cleanup(&x));
                 }
             });
     }
+
+    pool.join();
 }
 
 fn recompress_handle(subopts: &RecompressOpts) {
-    let recompress = |file: &DirEntry| {
-        println!("{}", file.path().display());
-        let res = || -> Result<usize, region::Error> {
-            let f = OpenOptions::new().write(true).read(true).open(file.path())?;
-            let mut region = region::RegionFile::new(f)?;
-
-            let res = region.recompress_region(Compression::new(subopts.level));
-
-            match res {
-                Ok(r) => {
-                    Ok(r.1)
-                },
-                Err(error) => {
-                    Err(error)
-                }
-            }
-        };
-
-        match res() {
-            Ok(_res) => {
-            },
-            Err(error) => {
-                println!("Error while processing {}: {:?}", file.path().display(), error);
-            }
-        };
-    };
+    let pool = ThreadPool::new(subopts.jobs);
 
     for dir in &subopts.input {
         WalkDir::new(dir)
             .into_iter()
             .filter_entry(|e| is_mca(e))
             .filter_map(|v| v.ok())
-            .for_each(|x| {
-                let metadata = x.metadata().unwrap();
+            .for_each(|file| {
+                let metadata = file.metadata().unwrap();
                 if metadata.is_file() && metadata.len() > 0 {
-                    recompress(&x);
+                    let level = subopts.level;
+                    pool.execute(move|| {
+                        let res = || -> Result<usize, region::Error> {
+                            let f = OpenOptions::new().write(true).read(true).open(file.path())?;
+                            let mut region = region::RegionFile::new(f)?;
+
+                            let res = region.recompress_region(Compression::new(level));
+
+                            match res {
+                                Ok(r) => {
+                                    Ok(r.1)
+                                },
+                                Err(error) => {
+                                    Err(error)
+                                }
+                            }
+                        };
+
+                        match res() {
+                            Ok(_res) => {
+                                println!("Processed {}", file.path().display());
+                            },
+                            Err(error) => {
+                                println!("Error while processing {}: {:?}", file.path().display(), error);
+                            }
+                        };
+                    });
                 }
             });
     }
+
+    pool.join();
 }
 
 fn main() {
